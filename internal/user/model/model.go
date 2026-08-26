@@ -85,6 +85,9 @@ const (
 	AuthProviderOAuth2
 	AuthProviderGoogle
 	AuthProviderApple
+	// AuthProviderHomeAssistant is appended, not inserted, so existing
+	// stored values for the providers above are unaffected.
+	AuthProviderHomeAssistant
 )
 
 type UserType int

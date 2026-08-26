@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"html"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -53,6 +54,7 @@ type Handler struct {
 	plusMaxSubaccounts     int
 	oauth2Config           config.OAuth2Config
 	singleCircleInstance   bool
+	trustIngressAuth       bool
 }
 
 func NewHandler(ur *uRepo.UserRepository, cr *cRepo.CircleRepository,
@@ -82,6 +84,7 @@ func NewHandler(ur *uRepo.UserRepository, cr *cRepo.CircleRepository,
 		plusMaxSubaccounts:     config.FeatureLimits.PlusMaxSubaccounts,
 		oauth2Config:           config.OAuth2Config,
 		singleCircleInstance:   config.SingleCircleInstance,
+		trustIngressAuth:       config.TrustIngressAuth,
 	}
 }
 
@@ -170,11 +173,29 @@ func (h *Handler) signUp(c *gin.Context) {
 		})
 		return
 	}
+	if err := h.assignNewUserToCircle(c, insertedUser, signupReq.DisplayName+"'s circle"); err != nil {
+		logging.FromContext(c).Errorw("account.handler.signUp failed to set up circle", "err", err)
+		c.JSON(500, gin.H{
+			"error": "Error setting up circle for new user",
+		})
+		return
+	}
+
+	c.JSON(201, gin.H{})
+}
+
+// assignNewUserToCircle joins a freshly created user to a circle -- the
+// shared household circle (id 1, bootstrapped on first use) when
+// single_circle_instance is set, otherwise a new circle of their own named
+// defaultCircleName -- and initializes their storage usage record. Shared by
+// every account-creation path (password signup, OAuth2/Google/Apple signup,
+// and HA ingress auto-provisioning) so they all honor single_circle_instance
+// identically.
+func (h *Handler) assignNewUserToCircle(c *gin.Context, u *uModel.User, defaultCircleName string) error {
 	var userCircle *cModel.Circle
+	var err error
 	role := cModel.UserRoleAdmin
 	if h.singleCircleInstance {
-		// In single-circle mode, every signup joins the shared household circle
-		// (ID 1) instead of getting its own. The first signup bootstraps it.
 		userCircle, err = h.circleRepo.GetCircleByID(c, 1)
 		if err != nil {
 			userCircle, err = h.circleRepo.CreateCircle(c, &cModel.Circle{
@@ -188,48 +209,34 @@ func (h *Handler) signUp(c *gin.Context) {
 		}
 	} else {
 		userCircle, err = h.circleRepo.CreateCircle(c, &cModel.Circle{
-			Name:       signupReq.DisplayName + "'s circle",
+			Name:       defaultCircleName,
 			CreatedAt:  time.Now().UTC(),
 			UpdatedAt:  time.Now().UTC(),
 			InviteCode: utils.GenerateInviteCode(c),
 		})
 	}
-
 	if err != nil {
-		c.JSON(500, gin.H{
-			"error": "Error creating circle",
-		})
-		return
+		return fmt.Errorf("creating circle: %w", err)
 	}
 
 	if err := h.circleRepo.AddUserToCircle(c, &cModel.UserCircle{
-		UserID:    insertedUser.ID,
+		UserID:    u.ID,
 		CircleID:  userCircle.ID,
 		Role:      role,
 		IsActive:  true,
 		CreatedAt: time.Now().UTC(),
 		UpdatedAt: time.Now().UTC(),
 	}); err != nil {
-		c.JSON(500, gin.H{
-			"error": "Error adding user to circle",
-		})
-		return
+		return fmt.Errorf("adding user to circle: %w", err)
 	}
-	insertedUser.CircleID = userCircle.ID
-	if err := h.userRepo.UpdateUser(c, insertedUser); err != nil {
-		c.JSON(500, gin.H{
-			"error": "Error updating user",
-		})
-		return
+	u.CircleID = userCircle.ID
+	if err := h.userRepo.UpdateUser(c, u); err != nil {
+		return fmt.Errorf("updating user: %w", err)
 	}
-	if err := h.storageRepo.CreateStorageUsage(c, insertedUser.ID, userCircle.ID); err != nil {
-		c.JSON(500, gin.H{
-			"error": "Error initializing storage",
-		})
-		return
+	if err := h.storageRepo.CreateStorageUsage(c, u.ID, userCircle.ID); err != nil {
+		return fmt.Errorf("initializing storage: %w", err)
 	}
-
-	c.JSON(201, gin.H{})
+	return nil
 }
 
 func (h *Handler) GetUserProfile(c *gin.Context) {
@@ -839,6 +846,97 @@ func (h *Handler) thirdPartyAuthCallback(c *gin.Context) {
 		c.JSON(http.StatusOK, tokenResponse)
 		return
 	}
+}
+
+// ingressAuth logs a user in (auto-provisioning a donetick account on first
+// sight) using the identity Home Assistant's supervisor forwards for
+// requests it proxies through an addon's ingress feature: X-Remote-User-Id,
+// X-Remote-User-Name, and X-Remote-User-Display-Name. HA's own model treats
+// reaching the ingress port at all as authentication -- it does not give the
+// addon any token to independently verify, so the only trust boundary this
+// handler can enforce itself is the request's source. Donetick's own nginx
+// (see the hassio addon's nginx.conf) only accepts ingress traffic from the
+// supervisor's IP and proxies it to this server over loopback; this server
+// is *also* reachable directly (e.g. the addon's non-ingress port), so
+// without the loopback check below, anyone who can reach it directly could
+// set these headers themselves and impersonate any Home Assistant user,
+// including an admin.
+func (h *Handler) ingressAuth(c *gin.Context) {
+	logger := logging.FromContext(c)
+
+	if !h.trustIngressAuth {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Not found"})
+		return
+	}
+
+	host, _, err := net.SplitHostPort(c.Request.RemoteAddr)
+	if err != nil {
+		host = c.Request.RemoteAddr
+	}
+	if host != "127.0.0.1" && host != "::1" {
+		logger.Warnw("account.handler.ingressAuth rejected a non-loopback request", "remoteAddr", c.Request.RemoteAddr)
+		c.JSON(http.StatusForbidden, gin.H{"error": "Forbidden"})
+		return
+	}
+
+	haUserID := c.GetHeader("X-Remote-User-Id")
+	haUsername := c.GetHeader("X-Remote-User-Name")
+	haDisplayName := c.GetHeader("X-Remote-User-Display-Name")
+	if haUserID == "" || haUsername == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Not authenticated via Home Assistant ingress"})
+		return
+	}
+	if haDisplayName == "" {
+		haDisplayName = haUsername
+	}
+
+	username := utils.NormalizeUsername(haUsername)
+	if !utils.IsValidUsername(username) {
+		logger.Errorw("account.handler.ingressAuth Home Assistant username did not normalize to a valid donetick username", "haUsername", haUsername)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Home Assistant username is not usable as a donetick username"})
+		return
+	}
+
+	acc, err := h.userRepo.GetUserByUsername(c, username)
+	if err != nil {
+		password := auth.GenerateRandomPassword(24)
+		encodedPassword, err := auth.EncodePassword(password)
+		if err != nil {
+			logger.Errorw("account.handler.ingressAuth password encoding failed", "err", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Unable to create user account"})
+			return
+		}
+		createdUser, err := h.userRepo.CreateUser(c, &uModel.User{
+			Username:    username,
+			Password:    encodedPassword,
+			DisplayName: html.EscapeString(haDisplayName),
+			Provider:    uModel.AuthProviderHomeAssistant,
+			CreatedAt:   time.Now().UTC(),
+			UpdatedAt:   time.Now().UTC(),
+		})
+		if err != nil {
+			logger.Errorw("account.handler.ingressAuth failed to create user", "err", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Unable to create user"})
+			return
+		}
+
+		if err := h.assignNewUserToCircle(c, createdUser, haDisplayName+"'s circle"); err != nil {
+			logger.Errorw("account.handler.ingressAuth failed to set up circle", "err", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error setting up circle for new user"})
+			return
+		}
+
+		acc = &uModel.UserDetails{User: *createdUser}
+	}
+
+	tokenResponse, err := h.tokenService.GenerateTokens(c.Request.Context(), acc)
+	if err != nil {
+		logger.Errorw("account.handler.ingressAuth failed to generate tokens", "err", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Unable to generate a token"})
+		return
+	}
+	c.SetCookie("refresh_token", tokenResponse.RefreshToken, int(h.tokenService.RefreshTokenExpiry().Seconds()), "/", "", true, true)
+	c.JSON(http.StatusOK, tokenResponse)
 }
 
 func (h *Handler) resetPassword(c *gin.Context) {
@@ -1807,6 +1905,13 @@ func Routes(router *gin.Engine, h *Handler, jwtAuth *jwt.GinJWTMiddleware, limit
 		authRoutes.POST("refresh", authHandler.RefreshTokenHandler) // Changed from GET to POST
 		authRoutes.POST("logout", authHandler.LogoutHandler)        // New logout endpoint
 		authRoutes.POST("mfa/verify", h.verifyMFA)                  // Add MFA verification endpoint
+
+		// Home Assistant ingress trusted-header auth. Independent of
+		// disable_password_auth (that flag is about donetick's own password
+		// form; this is a separate, off-by-default trust mechanism) and
+		// gated by h.trustIngressAuth + the loopback check inside the
+		// handler itself, not by any routing-level guard.
+		authRoutes.POST("ingress", h.ingressAuth)
 
 		// Password-based auth (signup, login, password reset). When
 		// disable_password_auth is set the instance is SSO-only, so these

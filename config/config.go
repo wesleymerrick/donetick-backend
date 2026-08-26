@@ -47,6 +47,7 @@ type Config struct {
 	Storage                StorageConfig       `mapstructure:"storage" yaml:"storage"`
 	SingleCircleInstance   bool                `mapstructure:"single_circle_instance" yaml:"single_circle_instance"`
 	DisablePasswordAuth    bool                `mapstructure:"disable_password_auth" yaml:"disable_password_auth"`
+	TrustIngressAuth       bool                `mapstructure:"trust_ingress_auth" yaml:"trust_ingress_auth"`
 	Info                   Info
 }
 
