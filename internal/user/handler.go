@@ -957,12 +957,13 @@ func (h *Handler) resetPassword(c *gin.Context) {
 		log.Error("account.handler.resetPassword failed to find user")
 		return
 	}
-	if user.Provider != 0 {
-		// user create account thought login with Gmail. they can reset the password they just need to login with google again
+	if user.Provider != uModel.AuthProviderDonetick {
+		// Account has no password to reset -- it was provisioned by another
+		// provider, which is where the user needs to authenticate instead.
 		c.JSON(
 			http.StatusForbidden,
 			gin.H{
-				"error": "User account created with google login. Please login with google",
+				"error": fmt.Sprintf("This account was created with %s login. Please log in with %s instead.", user.Provider.DisplayName(), user.Provider.DisplayName()),
 			},
 		)
 		return

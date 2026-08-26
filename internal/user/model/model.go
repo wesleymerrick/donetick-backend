@@ -90,6 +90,24 @@ const (
 	AuthProviderHomeAssistant
 )
 
+// DisplayName returns a human-readable name for messages shown to the user
+// (e.g. "please log in with X instead"), falling back to a generic label for
+// any value added here without a corresponding case.
+func (p AuthProviderType) DisplayName() string {
+	switch p {
+	case AuthProviderOAuth2:
+		return "SSO"
+	case AuthProviderGoogle:
+		return "Google"
+	case AuthProviderApple:
+		return "Apple"
+	case AuthProviderHomeAssistant:
+		return "Home Assistant"
+	default:
+		return "your identity provider"
+	}
+}
+
 type UserType int
 
 const (
