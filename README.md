@@ -55,6 +55,8 @@ Donetick is an open-source, user-friendly app designed to help you organize task
 
 **Multiple Sign-In Options**: Choose from local accounts or any OAuth2 provider that supports OIDC, like Keycloak, Authentik, Authelia, etc. (Tested with Authentik.)
 
+**Home Assistant Ingress Sign-In**: When running as the [Home Assistant add-on](https://github.com/donetick/hassio-addons), users can sign in automatically using their Home Assistant identity instead of a separate Donetick password. See [Home Assistant Ingress Authentication](#home-assistant-ingress-authentication) below.
+
 ### Notifications & Integrations
 
 **Dashboard View**: If you’re on a larger screen (like a laptop or tablet) and logged in as an admin, Donetick shows a mount-friendly dashboard layout. a full task list, calendar, and recent activity all in one place. Perfect for wall-mounted displays or shared tablets. With the ability for any user to pick their account and complete a task on the go!
@@ -248,6 +250,26 @@ Group matching is **exact-string and case-sensitive**.
      - DT_OAUTH2_MANAGER_GROUPS=donetick-managers
      - DT_DISABLE_PASSWORD_AUTH=true
    ```
+
+---
+
+## Home Assistant Ingress Authentication
+
+For the [Home Assistant add-on](https://github.com/donetick/hassio-addons), Donetick can sign a user in automatically using the identity Home Assistant's Supervisor already established, instead of requiring a separate Donetick password.
+
+### Environment Variables
+
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `DT_TRUST_INGRESS_AUTH` | bool | `false` | Enables `POST /api/v1/auth/ingress`. When on, a request carrying the Supervisor's `X-Remote-User-Id`/`X-Remote-User-Name`/`X-Remote-User-Display-Name` headers logs the matching user in, auto-provisioning one (`AuthProviderHomeAssistant`) on first visit. |
+
+### How it works and its trust boundary
+
+Home Assistant's Supervisor injects those `X-Remote-User-*` headers on every ingress-proxied request, identifying whichever Home Assistant user is making the request -- no addon-side opt-in needed on HA's end. Because Donetick's own port is typically *also* reachable directly (bypassing the ingress proxy entirely), the endpoint additionally requires the request's source address to be loopback (`127.0.0.1`/`::1`); anything else is rejected with `403`, regardless of what headers it carries. This is what makes it safe to trust the headers at all -- only the local nginx sidecar that terminates ingress can reach this endpoint as loopback.
+
+Auto-provisioned accounts have a randomly generated password the user never sees, so account-deletion and password-reset requests skip password confirmation for any non-`AuthProviderDonetick` account (see `AuthProviderType.DisplayName()`) -- the "type DELETE to confirm" step remains the safeguard against accidental deletion.
+
+This is independent of `DT_SINGLE_CIRCLE_INSTANCE` and `DT_DISABLE_PASSWORD_AUTH` above -- combine them freely. A common pairing is `DT_TRUST_INGRESS_AUTH=true` with `DT_IS_USER_CREATION_DISABLED=true`: the latter only closes the *open* signup form, while ingress auto-provisioning is already gated by having authenticated to Home Assistant, so it isn't affected.
 
 ---
 
