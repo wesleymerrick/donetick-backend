@@ -1437,13 +1437,18 @@ func (h *Handler) getStorageUsage(c *gin.Context) {
 
 // Account deletion request/response types
 type AccountDeletionRequest struct {
-	Password        string                 `json:"password" binding:"required"`
+	// Password is required for AuthProviderDonetick accounts only -- accounts
+	// provisioned by another provider (OAuth2, Google, Apple, Home Assistant)
+	// either have no password or one the user never saw, so they confirm via
+	// the Confirmation text alone instead.
+	Password        string                 `json:"password"`
 	TransferOptions []CircleTransferOption `json:"transferOptions,omitempty"`
 	Confirmation    string                 `json:"confirmation" binding:"required"` // Must be "DELETE"
 }
 
 type AccountDeletionCheckRequest struct {
-	Password string `json:"password" binding:"required"`
+	// See AccountDeletionRequest.Password.
+	Password string `json:"password"`
 }
 
 func (h *Handler) checkAccountDeletion(c *gin.Context) {
@@ -1459,10 +1464,13 @@ func (h *Handler) checkAccountDeletion(c *gin.Context) {
 		return
 	}
 
-	// Verify password
-	if auth.Matches(currentUser.Password, req.Password) != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid password"})
-		return
+	// Verify password, unless this account was provisioned by another
+	// provider and never had one the user knows.
+	if currentUser.Provider == uModel.AuthProviderDonetick {
+		if auth.Matches(currentUser.Password, req.Password) != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid password"})
+			return
+		}
 	}
 
 	// Check what would be deleted (dry run)
@@ -1494,10 +1502,13 @@ func (h *Handler) deleteAccount(c *gin.Context) {
 		return
 	}
 
-	// Verify password
-	if auth.Matches(currentUser.Password, req.Password) != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid password"})
-		return
+	// Verify password, unless this account was provisioned by another
+	// provider and never had one the user knows.
+	if currentUser.Provider == uModel.AuthProviderDonetick {
+		if auth.Matches(currentUser.Password, req.Password) != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid password"})
+			return
+		}
 	}
 
 	// Perform account deletion
