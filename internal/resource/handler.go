@@ -17,6 +17,13 @@ type Resource struct {
 	// DisablePasswordAuth tells the client to hide username/password login and
 	// signup, leaving only SSO (#438).
 	DisablePasswordAuth bool `json:"disable_password_auth"`
+	// TrustIngressAuth tells the client the Home Assistant ingress
+	// trusted-header auto-login is available at POST /auth/ingress.
+	TrustIngressAuth bool `json:"trust_ingress_auth"`
+	// HAIngressSlug, when set, lets the client link back into the Home
+	// Assistant ingress panel (which triggers the HA login flow) for anyone
+	// who reached this server some other way, e.g. the directly-exposed port.
+	HAIngressSlug string `json:"ha_ingress_slug" binding:"omitempty"`
 }
 type identityProvider struct {
 	Auth_url  string `json:"auth_url" binding:"omitempty"`
@@ -47,6 +54,8 @@ func (h *Handler) getResource(c *gin.Context) {
 		IsUserCreationDisabled: h.config.IsUserCreationDisabled,
 		SingleCircleInstance:   h.config.SingleCircleInstance,
 		DisablePasswordAuth:    h.config.DisablePasswordAuth,
+		TrustIngressAuth:       h.config.TrustIngressAuth,
+		HAIngressSlug:          h.config.HAIngressSlug,
 	})
 }
 

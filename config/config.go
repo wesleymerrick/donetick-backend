@@ -48,7 +48,13 @@ type Config struct {
 	SingleCircleInstance   bool                `mapstructure:"single_circle_instance" yaml:"single_circle_instance"`
 	DisablePasswordAuth    bool                `mapstructure:"disable_password_auth" yaml:"disable_password_auth"`
 	TrustIngressAuth       bool                `mapstructure:"trust_ingress_auth" yaml:"trust_ingress_auth"`
-	Info                   Info
+	// HAIngressSlug is the Home Assistant add-on slug for this instance,
+	// resolved once at addon startup via the Supervisor's self-info API. It
+	// lets the frontend link back into the ingress panel (which triggers the
+	// HA login flow) when the app is reached some other way, e.g. the
+	// directly-exposed port. Empty outside of a Home Assistant addon.
+	HAIngressSlug string `mapstructure:"ha_ingress_slug" yaml:"ha_ingress_slug"`
+	Info          Info
 }
 
 type Info struct {
