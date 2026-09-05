@@ -47,7 +47,12 @@ type Config struct {
 	Storage                StorageConfig       `mapstructure:"storage" yaml:"storage"`
 	SingleCircleInstance   bool                `mapstructure:"single_circle_instance" yaml:"single_circle_instance"`
 	DisablePasswordAuth    bool                `mapstructure:"disable_password_auth" yaml:"disable_password_auth"`
-	Info                   Info
+	// BasePath is for instances served from a fixed sub-path behind a
+	// reverse proxy (e.g. https://example.com/donetick/), set to "/donetick"
+	// with a leading slash and no trailing one. Baked into the served
+	// index.html as window.__BASE_PATH__ for the frontend to read.
+	BasePath string `mapstructure:"base_path" yaml:"base_path"`
+	Info     Info
 }
 
 type Info struct {
